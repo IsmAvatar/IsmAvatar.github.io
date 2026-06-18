@@ -14,14 +14,15 @@ body {
 }
 
 #reader {
-    width: 100%;
-    max-width: 500px;
+    width: 220px;
+    max-width: 220px;
+    margin-bottom: 10px;
 }
 
 button {
-    font-size: 18px;
-    padding: 10px;
-    margin: 5px;
+    font-size: 16px;
+    padding: 8px;
+    margin: 3px;
 }
 
 #count {
@@ -30,10 +31,33 @@ button {
     margin: 10px 0;
 }
 
-#results {
-    width: 100%;
-    height: 300px;
-    font-size: 16px;
+#list {
+    margin-top: 10px;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px;
+    border-bottom: 1px solid #ddd;
+}
+
+.latest {
+    background-color: #b7ffb7;
+}
+
+.previous {
+    background-color: #ffffb0;
+}
+
+.code {
+    flex-grow: 1;
+    word-break: break-all;
+}
+
+.deleteBtn {
+    margin-left: 10px;
 }
 </style>
 </head>
@@ -43,29 +67,75 @@ button {
 
 <div id="count">Count: 0</div>
 
-<div id="reader"></div>
+<div id="reader"></div></div>
 
 <div>
     <button onclick="copyList()">Copy List</button>
     <button onclick="clearList()">Clear List</button>
 </div>
-
+    
+<div id="list"></div>
 <textarea id="results" readonly></textarea>
 
 <script>
 const codes = new Set();
 
+let latestCode = null;
+let previousCode = null;
+
 function updateDisplay() {
-    const list = Array.from(codes);
-    document.getElementById("results").value = list.join("\n");
+    const sorted = Array.from(codes).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
+    );
+
     document.getElementById("count").textContent =
-        "Count: " + list.length;
+        "Count: " + sorted.length;
+
+    const container = document.getElementById("list");
+    container.innerHTML = "";
+
+    for (const code of sorted) {
+        const row = document.createElement("div");
+        row.className = "row";
+
+        if (code === latestCode) {
+            row.classList.add("latest");
+        } else if (code === previousCode) {
+            row.classList.add("previous");
+        }
+
+        const text = document.createElement("div");
+        text.className = "code";
+        text.textContent = code;
+
+        const del = document.createElement("button");
+        del.className = "deleteBtn";
+        del.textContent = "Delete";
+
+        del.onclick = () => {
+            codes.delete(code);
+
+            if (latestCode === code) latestCode = null;
+            if (previousCode === code) previousCode = null;
+
+            updateDisplay();
+        };
+
+        row.appendChild(text);
+        row.appendChild(del);
+
+        container.appendChild(row);
+    }
 }
 
 function addCode(code) {
     if (codes.has(code)) return;
 
+    previousCode = latestCode;
+    latestCode = code;
+
     codes.add(code);
+
     updateDisplay();
 
     if (navigator.vibrate) {
@@ -74,16 +144,20 @@ function addCode(code) {
 }
 
 function copyList() {
-    navigator.clipboard.writeText(
-        document.getElementById("results").value
+    const sorted = Array.from(codes).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
     );
-    alert("Copied");
+
+    navigator.clipboard.writeText(sorted.join("\n"));
 }
 
 function clearList() {
     if (!confirm("Clear all scanned barcodes?")) return;
 
     codes.clear();
+    latestCode = null;
+    previousCode = null;
+
     updateDisplay();
 }
 
