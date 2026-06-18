@@ -19,6 +19,13 @@ body {
     margin-bottom: 10px;
 }
 
+#lastScanPanel {
+    border: 1px solid #ccc;
+    padding: 8px;
+    margin: 10px 0;
+    font-size: 16px;
+}
+
 button {
     font-size: 16px;
     padding: 8px;
@@ -68,6 +75,12 @@ button {
 <div id="count">Count: 0</div>
 
 <div id="reader"></div></div>
+    
+<div id="lastScanPanel">
+    <div><b>Last Scan:</b> <span id="lastCode">None</span></div>
+    <div><b>Type:</b> <span id="lastType">Unknown</span></div>
+    <div><b>Time:</b> <span id="lastTime">--</span></div>
+</div>
 
 <div>
     <button onclick="copyList()">Copy List</button>
@@ -82,6 +95,9 @@ const codes = new Set();
 
 let latestCode = null;
 let previousCode = null;
+let lastScanCode = "";
+let lastScanType = "";
+let lastScanTime = "";
 
 function updateDisplay() {
     const sorted = Array.from(codes).sort((a, b) =>
@@ -128,14 +144,25 @@ function updateDisplay() {
     }
 }
 
-function addCode(code) {
+function addCode(code, type) {
+
     if (codes.has(code)) return;
 
     previousCode = latestCode;
     latestCode = code;
 
+    lastScanCode = code;
+    lastScanType = type;
+
+    lastScanTime = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+
     codes.add(code);
 
+    updateLastScanPanel();
     updateDisplay();
 
     if (navigator.vibrate) {
@@ -161,6 +188,17 @@ function clearList() {
     updateDisplay();
 }
 
+function updateLastScanPanel() {
+    document.getElementById("lastCode").textContent =
+        lastScanCode || "None";
+
+    document.getElementById("lastType").textContent =
+        lastScanType || "Unknown";
+
+    document.getElementById("lastTime").textContent =
+        lastScanTime || "--";
+}
+
 const scanner = new Html5Qrcode("reader");
 
 Html5Qrcode.getCameras()
@@ -184,7 +222,15 @@ Html5Qrcode.getCameras()
                 Html5QrcodeSupportedFormats.CODE_39
             ]
         },
-        decodedText => addCode(decodedText),
+        (decodedText, decodedResult) => {
+           let type = "Unknown";
+           try {
+                type = decodedResult.result.format.formatName;
+           } catch (e) {
+                console.log(decodedResult);
+           }
+           addCode(decodedText, type);
+        },
         errorMessage => {}
     );
 })
