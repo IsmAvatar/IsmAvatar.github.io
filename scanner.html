@@ -98,9 +98,8 @@ let previousCode = null;
 let lastScanCode = "";
 let lastScanType = "";
 let lastScanTime = "";
-let last = null;
-let streak = 0;
-let lastTime = 0;
+//pick the most frequent scan among the noise
+const candidates = new Map();
 
 function updateDisplay() {
     const sorted = Array.from(codes).sort((a, b) =>
@@ -148,32 +147,22 @@ function updateDisplay() {
 }
 
 function handleScan(code, type) {
+    const key = `${type}|${code}`;
 
-    const now = Date.now();
+    const entry = candidates.get(key) || {
+        hits: 0,
+        lastSeen: Date.now()
+    };
 
-    // reset streak if too much time passed
-    if (now - lastTime > 400) {
-        last = null;
-        streak = 0;
+    entry.hits++;
+    entry.lastSeen = Date.now();
+
+    candidates.set(key, entry);
+
+    if (entry.hits >= 3) {
+        candidates.clear();
+        addCode(code, type);
     }
-
-    lastTime = now;
-
-    if (code === last) {
-        streak++;
-    } else {
-        last = code;
-        streak = 1;
-    }
-
-    // require stability
-    if (streak < 4) return;
-
-    // final accept
-    streak = 0;
-    last = null;
-
-    addCode(code, type);
 }
 
 function addCode(code, type) {
