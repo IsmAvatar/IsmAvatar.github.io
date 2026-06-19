@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR Code Capture</title>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<style>
+:root {
+    color-scheme: light;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 10px;
+    max-width: 720px;
+}
+
+h2 {
+    margin: 0 0 10px;
+}
+
+#cameraPanel {
+    display: grid;
+    gap: 10px;
+}
+
+#preview,
+#snapshot {
+    width: 100%;
+    max-width: 520px;
+    background: #111;
+    border: 1px solid #bbb;
+}
+
+#preview {
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+}
+
+#snapshot {
+    display: none;
+}
+
+button {
+    font-size: 16px;
+    padding: 8px 12px;
+    margin: 3px 3px 3px 0;
+}
+
+button:disabled {
+    opacity: 0.55;
+}
+
+#status {
+    min-height: 24px;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+#count {
+    font-size: 22px;
+    font-weight: bold;
+    margin: 12px 0 6px;
+}
+
+#list {
+    margin-top: 8px;
+    max-width: 520px;
+}
+
+.row {
+    padding: 5px 4px;
+    border-bottom: 1px solid #ddd;
+    font-family: Consolas, monospace;
+    font-size: 18px;
+    word-break: break-all;
+}
+
+#rawText {
+    width: 100%;
+    max-width: 520px;
+    min-height: 130px;
+    box-sizing: border-box;
+    font-family: Consolas, monospace;
+    font-size: 14px;
+}
+
+#canvas {
+    display: none;
+}
+</style>
+</head>
+<body>
+
+<h2>OCR Code Capture</h2>
+
+<div id="cameraPanel">
+    <video id="preview" autoplay playsinline muted></video>
+    <img id="snapshot" alt="Captured frame preview">
+    <div>
+        <button id="captureBtn">Capture</button>
+        <button id="refocusBtn" disabled>Refocus</button>
+        <button id="copyBtn" disabled>Copy Codes</button>
+    </div>
+    <div id="status">Starting camera...</div>
+</div>
+
+<div id="count">Codes: 0</div>
+<div id="list"></div>
+
+<h3>Raw OCR</h3>
+<textarea id="rawText" readonly></textarea>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const codePattern = /H1\d+/g;
+const video = document.getElementById("preview");
+const snapshot = document.getElementById("snapshot");
+const canvas = document.getElementById("canvas");
+const captureBtn = document.getElementById("captureBtn");
+const refocusBtn = document.getElementById("refocusBtn");
+const copyBtn = document.getElementById("copyBtn");
+const statusEl = document.getElementById("status");
+const countEl = document.getElementById("count");
+const listEl = document.getElementById("list");
+const rawTextEl = document.getElementById("rawText");
+
+// Stream currently feeding the camera preview.
+let cameraStream = null;
+
+// Tesseract worker is expensive to start, so it is created lazily and reused.
+let ocrWorker = null;
+
+// Codes extracted from the most recent captured image.
+let extractedCodes = [];
+
+async function startCamera() {
+    try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: { ideal: "environment" },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                advanced: [{ focusMode: "continuous" }]
+            },
+            audio: false
+        });
+
+        video.srcObject = cameraStream;
+        await applyBestFocus().catch(() => null);
+        statusEl.textContent = "Camera ready";
+        captureBtn.disabled = false;
+        refocusBtn.disabled = false;
+    } catch (err) {
+        statusEl.textContent = "Camera error: " + err.message;
+        captureBtn.disabled = true;
+        refocusBtn.disabled = true;
+    }
+}
+
+async function applyBestFocus() {
+    const track = cameraStream?.getVideoTracks()[0];
+    if (!track?.getCapabilities || !track.applyConstraints) return null;
+
+    const capabilities = track.getCapabilities();
+    const focusModes = capabilities.focusMode || [];
+    const focusMode = focusModes.includes("continuous")
+        ? "continuous"
+        : focusModes.includes("single-shot")
+            ? "single-shot"
+            : null;
+
+    if (!focusMode) return null;
+
+    await track.applyConstraints({
+        advanced: [{ focusMode }]
+    });
+
+    return focusMode;
+}
+
+async function refocusCamera() {
+    refocusBtn.disabled = true;
+    const originalStatus = statusEl.textContent;
+
+    try {
+        statusEl.textContent = "Refocusing...";
+        const focusMode = await applyBestFocus();
+        statusEl.textContent = focusMode ? "Camera ready" : "Focus control unavailable";
+    } catch (err) {
+        statusEl.textContent = "Focus error: " + err.message;
+    } finally {
+        refocusBtn.disabled = false;
+        if (statusEl.textContent === "Focus control unavailable") {
+            setTimeout(() => {
+                statusEl.textContent = originalStatus;
+            }, 1500);
+        }
+    }
+}
+
+async function getOcrWorker() {
+    if (ocrWorker) return ocrWorker;
+
+    statusEl.textContent = "Loading OCR...";
+    ocrWorker = await Tesseract.createWorker("eng", 1, {
+        logger: message => {
+            if (message.status === "recognizing text") {
+                const percent = Math.round(message.progress * 100);
+                statusEl.textContent = "Reading text... " + percent + "%";
+            }
+        }
+    });
+
+    await ocrWorker.setParameters({
+        tessedit_char_whitelist: "H0123456789",
+        tessedit_pageseg_mode: Tesseract.PSM?.SPARSE_TEXT || "11"
+    });
+
+    return ocrWorker;
+}
+
+function drawVideoFrameToCanvas() {
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
+
+    if (!sourceWidth || !sourceHeight) {
+        throw new Error("Camera frame is not ready yet");
+    }
+
+    const maxWidth = 1800;
+    const scale = Math.min(1, maxWidth / sourceWidth);
+    canvas.width = Math.round(sourceWidth * scale);
+    canvas.height = Math.round(sourceHeight * scale);
+
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    improveTextContrast(ctx, canvas.width, canvas.height);
+    snapshot.src = canvas.toDataURL("image/png");
+    snapshot.style.display = "block";
+}
+
+function improveTextContrast(ctx, width, height) {
+    const image = ctx.getImageData(0, 0, width, height);
+    const data = image.data;
