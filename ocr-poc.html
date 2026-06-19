@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OCR Code Capture</title>
 
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-
 <style>
 :root {
     color-scheme: light;
@@ -60,6 +58,11 @@ button:disabled {
     font-weight: bold;
 }
 
+#buildInfo {
+    color: #555;
+    font-size: 12px;
+}
+
 #count {
     font-size: 22px;
     font-weight: bold;
@@ -107,6 +110,7 @@ button:disabled {
         <button id="copyBtn" disabled>Copy Codes</button>
     </div>
     <div id="status">Starting camera...</div>
+    <div id="buildInfo">Build: camera-nonblocking-start-2</div>
 </div>
 
 <div id="count">Codes: 0</div>
@@ -137,6 +141,9 @@ let cameraStream = null;
 // Prevents overlapping camera permission/start requests.
 let cameraStarting = false;
 
+// Tesseract is loaded only after capture so it cannot block camera startup.
+let tesseractLoadPromise = null;
+
 // Tesseract worker is expensive to start, so it is created lazily and reused.
 let ocrWorker = null;
 
@@ -157,13 +164,14 @@ async function startCamera() {
 
         cameraStream = await getCameraStream();
         video.srcObject = cameraStream;
-        await video.play();
-        await applyCameraPreferences().catch(() => null);
 
-        statusEl.textContent = "Camera ready";
+        statusEl.textContent = "Camera stream connected";
         startBtn.disabled = true;
         captureBtn.disabled = false;
         refocusBtn.disabled = false;
+
+        video.play().catch(() => null);
+        applyCameraPreferencesWithTimeout();
     } catch (err) {
         statusEl.textContent = "Camera error: " + err.message;
         startBtn.disabled = false;
@@ -185,6 +193,15 @@ async function getCameraStream() {
     });
 
     return Promise.race([streamRequest, timeout]);
+}
+
+function applyCameraPreferencesWithTimeout() {
+    const preferences = applyCameraPreferences();
+    const timeout = new Promise(resolve => setTimeout(resolve, 2500));
+
+    Promise.race([preferences, timeout]).finally(() => {
+        if (cameraStream) statusEl.textContent = "Camera ready";
+    });
 }
 
 async function applyCameraPreferences() {
@@ -240,9 +257,27 @@ async function refocusCamera() {
     }
 }
 
+async function loadTesseract() {
+    if (window.Tesseract) return window.Tesseract;
+
+    if (!tesseractLoadPromise) {
+        statusEl.textContent = "Loading OCR library...";
+        tesseractLoadPromise = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+            script.onload = () => resolve(window.Tesseract);
+            script.onerror = () => reject(new Error("Could not load OCR library"));
+            document.head.appendChild(script);
+        });
+    }
+
+    return tesseractLoadPromise;
+}
+
 async function getOcrWorker() {
     if (ocrWorker) return ocrWorker;
 
+    const Tesseract = await loadTesseract();
     statusEl.textContent = "Loading OCR...";
     ocrWorker = await Tesseract.createWorker("eng", 1, {
         logger: message => {
