@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barcode and OCR Compare</title>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+
+<style>
+body {
+    font-family: Arial, sans-serif;
+    margin: 10px;
+    max-width: 900px;
+}
+
+h2,
+h3 {
+    margin: 0 0 10px;
+}
+
+section {
+    margin: 14px 0;
+}
+
+button {
+    font-size: 16px;
+    padding: 8px 12px;
+    margin: 3px 3px 3px 0;
+}
+
+button:disabled {
+    opacity: 0.55;
+}
+
+#cameraArea {
+    display: grid;
+    gap: 10px;
+    max-width: 540px;
+}
+
+#reader,
+#ocrPreview,
+#snapshot {
+    width: 100%;
+    max-width: 520px;
+    border: 1px solid #bbb;
+    background: #111;
+}
+
+#reader {
+    min-height: 220px;
+}
+
+#ocrPreview {
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+}
+
+#ocrPreview,
+#snapshot {
+    display: none;
+}
+
+#status {
+    min-height: 24px;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+#buildInfo {
+    color: #555;
+    font-size: 12px;
+}
+
+.modeActive {
+    background: #d8f0ff;
+    border: 2px solid #2378a5;
+}
+
+.lists {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.listPanel {
+    min-width: 0;
+}
+
+.count {
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+.list {
+    border-top: 1px solid #ddd;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 4px;
+    border-bottom: 1px solid #ddd;
+    font-family: Consolas, monospace;
+    font-size: 16px;
+    word-break: break-all;
+}
+
+.diffMissingScan {
+    background: #ffe8c2;
+}
+
+.diffMissingOcr {
+    background: #ffd7d7;
+}
+
+.rowText {
+    flex: 1;
+    min-width: 0;
+}
+
+.deleteBtn {
+    flex: 0 0 auto;
+    font-size: 13px;
+    padding: 5px 8px;
+}
+
+#lastScanPanel {
+    border: 1px solid #ccc;
+    padding: 8px;
+    max-width: 520px;
+}
+
+#rawText {
+    width: 100%;
+    max-width: 520px;
+    min-height: 110px;
+    box-sizing: border-box;
+    font-family: Consolas, monospace;
+    font-size: 14px;
+}
+
+#canvas {
+    display: none;
+}
+</style>
+</head>
+<body>
+
+<h2>Barcode and OCR Compare</h2>
+
+<section id="cameraArea">
+    <div id="reader"></div>
+    <video id="ocrPreview" autoplay playsinline muted></video>
+    <img id="snapshot" alt="Captured OCR frame preview">
+
+    <div>
+        <button id="barcodeModeBtn">Scan Barcodes</button>
+        <button id="ocrModeBtn">OCR Photo Mode</button>
+        <button id="restartBtn">Restart Camera</button>
+        <button id="captureBtn" disabled>Capture OCR</button>
+        <button id="refocusBtn" disabled>Refocus</button>
+    </div>
+
+    <div id="status">Starting barcode scanner...</div>
+    <div id="buildInfo">Build: combined-1</div>
+</section>
+
+<section id="lastScanPanel">
+    <div><b>Last Barcode:</b> <span id="lastCode">None</span></div>
+    <div><b>Type:</b> <span id="lastType">Unknown</span></div>
+    <div><b>Time:</b> <span id="lastTime">--</span></div>
+</section>
+
+<section>
+    <button id="copyBarcodeBtn">Copy Barcodes</button>
+    <button id="copyOcrBtn">Copy OCR Codes</button>
+    <button id="copyDiffBtn">Copy Differences</button>
+    <button id="clearBarcodeBtn">Clear Barcodes</button>
+    <button id="clearOcrBtn">Clear OCR</button>
+    <button id="clearAllBtn">Clear All</button>
+</section>
+
+<section class="lists">
+    <div class="listPanel">
+        <h3>Barcode Scans</h3>
+        <div id="barcodeCount" class="count">Barcode codes: 0</div>
+        <div id="barcodeList" class="list"></div>
+    </div>
+
+    <div class="listPanel">
+        <h3>OCR Codes</h3>
+        <div id="ocrCount" class="count">OCR codes: 0</div>
+        <div id="ocrList" class="list"></div>
+    </div>
+
+    <div class="listPanel">
+        <h3>Differences</h3>
+        <div id="diffCount" class="count">Differences: 0</div>
+        <div id="diffList" class="list"></div>
+    </div>
+</section>
+
+<section>
+    <h3>Raw OCR</h3>
+    <textarea id="rawText" readonly></textarea>
+</section>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const codePattern = /H1\d+/g;
+const barcodeFormats = [
+    Html5QrcodeSupportedFormats.UPC_A,
+    Html5QrcodeSupportedFormats.UPC_E,
+    Html5QrcodeSupportedFormats.EAN_13,
+    Html5QrcodeSupportedFormats.EAN_8,
+    Html5QrcodeSupportedFormats.CODE_128,
+    Html5QrcodeSupportedFormats.CODE_39
+];
+
+const reader = document.getElementById("reader");
+const ocrPreview = document.getElementById("ocrPreview");
+const snapshot = document.getElementById("snapshot");
+const canvas = document.getElementById("canvas");
+const barcodeModeBtn = document.getElementById("barcodeModeBtn");
+const ocrModeBtn = document.getElementById("ocrModeBtn");
+const restartBtn = document.getElementById("restartBtn");
+const captureBtn = document.getElementById("captureBtn");
+const refocusBtn = document.getElementById("refocusBtn");
+const statusEl = document.getElementById("status");
+const barcodeCount = document.getElementById("barcodeCount");
+const ocrCount = document.getElementById("ocrCount");
+const diffCount = document.getElementById("diffCount");
+const barcodeList = document.getElementById("barcodeList");
+const ocrList = document.getElementById("ocrList");
+const diffList = document.getElementById("diffList");
+const rawTextEl = document.getElementById("rawText");
+const copyBarcodeBtn = document.getElementById("copyBarcodeBtn");
+const copyOcrBtn = document.getElementById("copyOcrBtn");
+const copyDiffBtn = document.getElementById("copyDiffBtn");
+const clearBarcodeBtn = document.getElementById("clearBarcodeBtn");
+const clearOcrBtn = document.getElementById("clearOcrBtn");
+const clearAllBtn = document.getElementById("clearAllBtn");
+
+const barcodeCodes = new Set();
+const ocrCodes = new Set();
+const scanner = new Html5Qrcode("reader");
+
+let activeMode = null;
+let barcodeScannerRunning = false;
+let cameraStream = null;
+let cameraStarting = false;
+let tesseractLoadPromise = null;
+let ocrWorker = null;
+let newestHighlightedBarcode = null;
+let priorHighlightedBarcode = null;
+let lastBarcodeScan = null;
+let pendingBarcodeScan = {
+    code: null,
+    streak: 0,
+    time: 0
+};
+
+function sortedCodes(codes) {
+    return Array.from(codes).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
+    );
+}
+
+function renderAllLists() {
+    renderCodeList(barcodeList, sortedCodes(barcodeCodes), "barcode");
+    renderCodeList(ocrList, sortedCodes(ocrCodes), "ocr");
+    renderDiffList();
+
+    barcodeCount.textContent = "Barcode codes: " + barcodeCodes.size;
+    ocrCount.textContent = "OCR codes: " + ocrCodes.size;
+}
+
+function renderCodeList(container, codes, source) {
+    container.innerHTML = "";
+
+    for (const code of codes) {
+        const row = document.createElement("div");
+        row.className = "row";
+
+        if (source === "barcode" && code === newestHighlightedBarcode) {
+            row.style.background = "#b7ffb7";
+        } else if (source === "barcode" && code === priorHighlightedBarcode) {
+            row.style.background = "#ffffb0";
+        }
+
+        const text = document.createElement("div");
+        text.className = "rowText";
+        text.textContent = code;
+
+        const del = document.createElement("button");
+        del.className = "deleteBtn";
+        del.textContent = "Delete";
+        del.onclick = () => deleteCode(source, code);
+
+        row.appendChild(text);
+        row.appendChild(del);
+        container.appendChild(row);
+    }
+}
+
+function renderDiffList() {
+    const missingFromOcr = sortedCodes(barcodeCodes).filter(code => !ocrCodes.has(code));
+    const missingFromBarcode = sortedCodes(ocrCodes).filter(code => !barcodeCodes.has(code));
+    const total = missingFromOcr.length + missingFromBarcode.length;
+
+    diffCount.textContent = "Differences: " + total;
+    diffList.innerHTML = "";
+
+    for (const code of missingFromOcr) {
+        appendDiffRow(code, "Scanned only", "diffMissingOcr");
+    }
+
+    for (const code of missingFromBarcode) {
+        appendDiffRow(code, "OCR only", "diffMissingScan");
+    }
+}
+
+function appendDiffRow(code, label, className) {
+    const row = document.createElement("div");
+    row.className = "row " + className;
+
+    const text = document.createElement("div");
+    text.className = "rowText";
+    text.textContent = code;
+
+    const tag = document.createElement("div");
+    tag.textContent = label;
+
+    row.appendChild(text);
+    row.appendChild(tag);
+    diffList.appendChild(row);
+}
+
+function deleteCode(source, code) {
+    if (source === "barcode") {
+        barcodeCodes.delete(code);
+        if (newestHighlightedBarcode === code) newestHighlightedBarcode = null;
+        if (priorHighlightedBarcode === code) priorHighlightedBarcode = null;
+        if (lastBarcodeScan?.code === code) {
+            lastBarcodeScan = null;
+            updateLastScanPanel();
+        }
+    } else {
+        ocrCodes.delete(code);
+    }
+
+    renderAllLists();
+}
+
+function handleBarcodeScan(code, type) {
+    const now = Date.now();
+
+    if (now - pendingBarcodeScan.time > 400) {
+        pendingBarcodeScan.code = null;
+        pendingBarcodeScan.streak = 0;
+    }
+
+    pendingBarcodeScan.time = now;
+
+    if (code === pendingBarcodeScan.code) {
+        pendingBarcodeScan.streak++;
+    } else {
+        pendingBarcodeScan.code = code;
+        pendingBarcodeScan.streak = 1;
+    }
+
+    if (pendingBarcodeScan.streak < 4) return;
+
+    pendingBarcodeScan.code = null;
+    pendingBarcodeScan.streak = 0;
+    addBarcodeCode(code, type);
+}
+
+function addBarcodeCode(code, type) {
+    if (barcodeCodes.has(code)) return;
+
+    priorHighlightedBarcode = newestHighlightedBarcode;
+    newestHighlightedBarcode = code;
+    lastBarcodeScan = {
+        code,
+        type,
+        time: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        })
+    };
+
+    barcodeCodes.add(code);
+    updateLastScanPanel();
+    renderAllLists();
+
+    if (navigator.vibrate) navigator.vibrate(100);
+}
+
+function updateLastScanPanel() {
+    document.getElementById("lastCode").textContent = lastBarcodeScan?.code || "None";
+    document.getElementById("lastType").textContent = lastBarcodeScan?.type || "Unknown";
+    document.getElementById("lastTime").textContent = lastBarcodeScan?.time || "--";
+}
+
+async function switchToBarcodeMode() {
+    activeMode = "barcode";
+    updateModeButtons();
+    stopOcrCamera();
+    await startBarcodeScanner();
+}
+
+async function switchToOcrMode() {
+    activeMode = "ocr";
+    updateModeButtons();
+    await stopBarcodeScanner();
+    if (!cameraStream) {
+        await startOcrCamera();
+    }
+}
+
+async function restartCamera() {
+    statusEl.textContent = "Restarting camera...";
+
+    if (activeMode === "barcode") {
+        await stopBarcodeScanner();
+        await startBarcodeScanner();
+    } else {
+        stopOcrCamera();
+        await startOcrCamera();
+    }
+}
+
+async function startBarcodeScanner() {
+    if (barcodeScannerRunning) return;
+
+    reader.style.display = "block";
+    ocrPreview.style.display = "none";
+    captureBtn.disabled = true;
+    refocusBtn.disabled = true;
+    statusEl.textContent = "Starting barcode scanner...";
+
+    try {
+        await scanner.start(
+            { facingMode: "environment" },
+            {
+                fps: 10,
+                qrbox: { width: 300, height: 150 },
+                formatsToSupport: barcodeFormats
+            },
+            (decodedText, decodedResult) => {
+                let type = "Unknown";
+                try {
+                    type = decodedResult.result.format.formatName;
+                } catch (e) {
+                    console.log(decodedResult);
+                }
+                handleBarcodeScan(decodedText, type);
+            },
+            () => {}
+        );
+
+        barcodeScannerRunning = true;
+        statusEl.textContent = "Barcode scanner active";
+    } catch (err) {
+        barcodeScannerRunning = false;
+        statusEl.textContent = "Barcode camera error: " + err.message;
+    }
+}
+
+async function stopBarcodeScanner() {
+    if (!barcodeScannerRunning) return;
+
+    try {
+        await scanner.stop();
+        scanner.clear();
+    } catch (err) {
+        console.log(err);
+    } finally {
+        barcodeScannerRunning = false;
+    }
+}
+
+async function startOcrCamera() {
+    if (cameraStarting || cameraStream) return;
+
+    cameraStarting = true;
+    reader.style.display = "none";
+    ocrPreview.style.display = "block";
+    captureBtn.disabled = true;
+    refocusBtn.disabled = true;
+    statusEl.textContent = "Starting OCR camera...";
+
+    try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error("Camera API is unavailable on this page");
+        }
+
+        cameraStream = await getCameraStream();
+        ocrPreview.srcObject = cameraStream;
+        statusEl.textContent = "OCR camera connected";
+        captureBtn.disabled = false;
+        refocusBtn.disabled = false;
+
+        ocrPreview.play().catch(() => null);
+        applyCameraPreferencesWithTimeout();
+    } catch (err) {
+        statusEl.textContent = "OCR camera error: " + err.message;
+        stopOcrCamera();
+        captureBtn.disabled = true;
+        refocusBtn.disabled = true;
+    } finally {
+        cameraStarting = false;
+    }
+}
+
+function stopOcrCamera() {
+    if (!cameraStream) return;
+
+    for (const track of cameraStream.getTracks()) {
+        track.stop();
+    }
+
+    cameraStream = null;
+    ocrPreview.srcObject = null;
+}
+
+async function getCameraStream() {
+    const streamRequest = navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false
+    });
+
+    const timeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Camera request timed out")), 12000);
+    });
+
+    return Promise.race([streamRequest, timeout]);
+}
+
+function applyCameraPreferencesWithTimeout() {
+    const preferences = applyCameraPreferences();
+    const timeout = new Promise(resolve => setTimeout(resolve, 2500));
+
+    Promise.race([preferences, timeout]).finally(() => {
+        if (cameraStream && activeMode === "ocr") statusEl.textContent = "OCR camera ready";
+    });
+}
+
+async function applyCameraPreferences() {
+    const track = cameraStream?.getVideoTracks()[0];
+    if (!track?.applyConstraints) return;
+
+    await track.applyConstraints({
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+    });
+
+    await applyBestFocus();
+}
+
+async function applyBestFocus() {
+    const track = cameraStream?.getVideoTracks()[0];
+    if (!track?.getCapabilities || !track.applyConstraints) return null;
+
+    const capabilities = track.getCapabilities();
+    const focusModes = capabilities.focusMode || [];
+    const focusMode = focusModes.includes("continuous")
+        ? "continuous"
+        : focusModes.includes("single-shot")
+            ? "single-shot"
+            : null;
+
+    if (!focusMode) return null;
+
+    await track.applyConstraints({ advanced: [{ focusMode }] });
+    return focusMode;
+}
+
+async function refocusCamera() {
+    if (activeMode !== "ocr") return;
+
+    refocusBtn.disabled = true;
+    const originalStatus = statusEl.textContent;
+
+    try {
+        statusEl.textContent = "Refocusing...";
+        const focusMode = await applyBestFocus();
+        statusEl.textContent = focusMode ? "OCR camera ready" : "Focus control unavailable";
+    } catch (err) {
+        statusEl.textContent = "Focus error: " + err.message;
+    } finally {
+        refocusBtn.disabled = false;
+        if (statusEl.textContent === "Focus control unavailable") {
+            setTimeout(() => {
+                statusEl.textContent = originalStatus;
+            }, 1500);
+        }
+    }
+}
+
+async function loadTesseract() {
+    if (window.Tesseract) return window.Tesseract;
+
+    if (!tesseractLoadPromise) {
+        statusEl.textContent = "Loading OCR library...";
+        tesseractLoadPromise = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+            script.onload = () => resolve(window.Tesseract);
+            script.onerror = () => reject(new Error("Could not load OCR library"));
+            document.head.appendChild(script);
+        });
+    }
+
+    return tesseractLoadPromise;
+}
+
+async function getOcrWorker() {
+    if (ocrWorker) return ocrWorker;
+
+    const Tesseract = await loadTesseract();
+    statusEl.textContent = "Loading OCR...";
+    ocrWorker = await Tesseract.createWorker("eng", 1, {
+        logger: message => {
+            if (message.status === "recognizing text") {
+                const percent = Math.round(message.progress * 100);
+                statusEl.textContent = "Reading text... " + percent + "%";
+            }
+        }
+    });
+
+    await ocrWorker.setParameters({
+        tessedit_char_whitelist: "H0123456789",
+        tessedit_pageseg_mode: Tesseract.PSM?.SPARSE_TEXT || "11"
+    });
+
+    return ocrWorker;
+}
+
+function drawVideoFrameToCanvas() {
+    const sourceWidth = ocrPreview.videoWidth;
+    const sourceHeight = ocrPreview.videoHeight;
+
+    if (!sourceWidth || !sourceHeight) {
+        throw new Error("Camera frame is not ready yet");
+    }
+
+    const maxWidth = 1800;
+    const scale = Math.min(1, maxWidth / sourceWidth);
+    canvas.width = Math.round(sourceWidth * scale);
+    canvas.height = Math.round(sourceHeight * scale);
+
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(ocrPreview, 0, 0, canvas.width, canvas.height);
+    improveTextContrast(ctx, canvas.width, canvas.height);
+
+    snapshot.src = canvas.toDataURL("image/png");
+    snapshot.style.display = "block";
+}
+
+function improveTextContrast(ctx, width, height) {
+    const image = ctx.getImageData(0, 0, width, height);
+    const data = image.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+        const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        const boosted = gray < 170 ? Math.max(0, gray - 35) : Math.min(255, gray + 35);
+        data[i] = boosted;
+        data[i + 1] = boosted;
+        data[i + 2] = boosted;
+    }
+
+    ctx.putImageData(image, 0, 0);
+}
+
+function extractCodes(text) {
+    const found = new Set();
+    const lines = text.toUpperCase().split(/\r?\n/);
+
+    for (const line of lines) {
+        const compactLine = line
+            .replace(/[|I]/g, "1")
+            .replace(/O/g, "0")
+            .replace(/[^A-Z0-9]/g, "");
+
+        for (const code of compactLine.match(codePattern) || []) {
+            found.add(code);
+        }
+    }
+
+    return sortedCodes(found);
+}
+
+async function captureAndRead() {
+    if (activeMode !== "ocr") return;
+
+    captureBtn.disabled = true;
+    statusEl.textContent = "Capturing OCR image...";
+
+    try {
+        drawVideoFrameToCanvas();
+        const worker = await getOcrWorker();
+        const result = await worker.recognize(canvas);
+        const rawText = result.data.text || "";
+        const codes = extractCodes(rawText);
+
+        rawTextEl.value = rawText;
+        for (const code of codes) {
+            ocrCodes.add(code);
+        }
+
+        renderAllLists();
+        statusEl.textContent = codes.length ? "OCR complete" : "No H1 codes found";
+    } catch (err) {
+        statusEl.textContent = "OCR error: " + err.message;
+    } finally {
+        captureBtn.disabled = false;
+    }
+}
+
+function updateModeButtons() {
+    barcodeModeBtn.classList.toggle("modeActive", activeMode === "barcode");
+    ocrModeBtn.classList.toggle("modeActive", activeMode === "ocr");
+}
+
+function copySet(codes) {
+    navigator.clipboard.writeText(sortedCodes(codes).join("\n"));
+}
+
+function copyDifferences() {
+    const lines = [];
+    for (const code of sortedCodes(barcodeCodes).filter(code => !ocrCodes.has(code))) {
+        lines.push(code + " - scanned only");
+    }
+    for (const code of sortedCodes(ocrCodes).filter(code => !barcodeCodes.has(code))) {
+        lines.push(code + " - OCR only");
+    }
+    navigator.clipboard.writeText(lines.join("\n"));
+}
+
+function clearBarcodeCodes() {
+    barcodeCodes.clear();
+    newestHighlightedBarcode = null;
+    priorHighlightedBarcode = null;
+    lastBarcodeScan = null;
+    updateLastScanPanel();
+    renderAllLists();
+}
+
+function clearOcrCodes() {
+    ocrCodes.clear();
+    rawTextEl.value = "";
+    snapshot.style.display = "none";
+    renderAllLists();
+}
+
+barcodeModeBtn.addEventListener("click", switchToBarcodeMode);
+ocrModeBtn.addEventListener("click", switchToOcrMode);
+restartBtn.addEventListener("click", restartCamera);
+captureBtn.addEventListener("click", captureAndRead);
+refocusBtn.addEventListener("click", refocusCamera);
+ocrPreview.addEventListener("click", refocusCamera);
+copyBarcodeBtn.addEventListener("click", () => copySet(barcodeCodes));
+copyOcrBtn.addEventListener("click", () => copySet(ocrCodes));
+copyDiffBtn.addEventListener("click", copyDifferences);
+clearBarcodeBtn.addEventListener("click", clearBarcodeCodes);
+clearOcrBtn.addEventListener("click", clearOcrCodes);
+clearAllBtn.addEventListener("click", () => {
+    clearBarcodeCodes();
+    clearOcrCodes();
+});
+
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && activeMode) {
+        statusEl.textContent = activeMode === "barcode"
+            ? "Barcode scanner active"
+            : "OCR camera ready";
+    }
+});
+
+renderAllLists();
+switchToBarcodeMode();
+</script>
+
+</body>
+</html>
