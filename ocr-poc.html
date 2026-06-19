@@ -101,6 +101,7 @@ button:disabled {
     <video id="preview" autoplay playsinline muted></video>
     <img id="snapshot" alt="Captured frame preview">
     <div>
+        <button id="startBtn">Start Camera</button>
         <button id="captureBtn">Capture</button>
         <button id="refocusBtn" disabled>Refocus</button>
         <button id="copyBtn" disabled>Copy Codes</button>
@@ -121,6 +122,7 @@ const codePattern = /H1\d+/g;
 const video = document.getElementById("preview");
 const snapshot = document.getElementById("snapshot");
 const canvas = document.getElementById("canvas");
+const startBtn = document.getElementById("startBtn");
 const captureBtn = document.getElementById("captureBtn");
 const refocusBtn = document.getElementById("refocusBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -132,6 +134,9 @@ const rawTextEl = document.getElementById("rawText");
 // Stream currently feeding the camera preview.
 let cameraStream = null;
 
+// Prevents overlapping camera permission/start requests.
+let cameraStarting = false;
+
 // Tesseract worker is expensive to start, so it is created lazily and reused.
 let ocrWorker = null;
 
@@ -139,27 +144,59 @@ let ocrWorker = null;
 let extractedCodes = [];
 
 async function startCamera() {
-    try {
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                facingMode: { ideal: "environment" },
-                width: { ideal: 1920 },
-                height: { ideal: 1080 },
-                advanced: [{ focusMode: "continuous" }]
-            },
-            audio: false
-        });
+    if (cameraStarting || cameraStream) return;
 
+    cameraStarting = true;
+    startBtn.disabled = true;
+    statusEl.textContent = "Starting camera...";
+
+    try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error("Camera API is unavailable on this page");
+        }
+
+        cameraStream = await getCameraStream();
         video.srcObject = cameraStream;
-        await applyBestFocus().catch(() => null);
+        await video.play();
+        await applyCameraPreferences().catch(() => null);
+
         statusEl.textContent = "Camera ready";
+        startBtn.disabled = true;
         captureBtn.disabled = false;
         refocusBtn.disabled = false;
     } catch (err) {
         statusEl.textContent = "Camera error: " + err.message;
+        startBtn.disabled = false;
         captureBtn.disabled = true;
         refocusBtn.disabled = true;
+    } finally {
+        cameraStarting = false;
     }
+}
+
+async function getCameraStream() {
+    const streamRequest = navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false
+    });
+
+    const timeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Camera request timed out")), 12000);
+    });
+
+    return Promise.race([streamRequest, timeout]);
+}
+
+async function applyCameraPreferences() {
+    const track = cameraStream?.getVideoTracks()[0];
+    if (!track?.applyConstraints) return;
+
+    await track.applyConstraints({
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+    });
+
+    await applyBestFocus();
 }
 
 async function applyBestFocus() {
@@ -248,3 +285,16 @@ function drawVideoFrameToCanvas() {
 function improveTextContrast(ctx, width, height) {
     const image = ctx.getImageData(0, 0, width, height);
     const data = image.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+        const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        const boosted = gray < 170 ? Math.max(0, gray - 35) : Math.min(255, gray + 35);
+        data[i] = boosted;
+        data[i + 1] = boosted;
+        data[i + 2] = boosted;
+    }
+
+    ctx.putImageData(image, 0, 0);
+}
+
+function extractCodes(text) {
