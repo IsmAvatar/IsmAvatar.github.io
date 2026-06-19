@@ -260,11 +260,7 @@ let ocrWorker = null;
 let newestHighlightedBarcode = null;
 let priorHighlightedBarcode = null;
 let lastBarcodeScan = null;
-let pendingBarcodeScan = {
-    code: null,
-    streak: 0,
-    time: 0
-};
+let pendingBarcodeScan = {};
 
 function sortedCodes(codes) {
     return Array.from(codes).sort((a, b) =>
@@ -358,27 +354,16 @@ function deleteCode(source, code) {
     renderAllLists();
 }
 
+// Filter out noisy incomplete scans by collecting scans
+// until we get the same scan 4 times.
 function handleBarcodeScan(code, type) {
-    const now = Date.now();
+    pendingBarcodeScan[code] =
+        (pendingBarcodeScan[code] ?? 0) + 1;
 
-    if (now - pendingBarcodeScan.time > 400) {
-        pendingBarcodeScan.code = null;
-        pendingBarcodeScan.streak = 0;
-    }
+    if (pendingBarcodeScan[code] < 4)
+        return;
 
-    pendingBarcodeScan.time = now;
-
-    if (code === pendingBarcodeScan.code) {
-        pendingBarcodeScan.streak++;
-    } else {
-        pendingBarcodeScan.code = code;
-        pendingBarcodeScan.streak = 1;
-    }
-
-    if (pendingBarcodeScan.streak < 4) return;
-
-    pendingBarcodeScan.code = null;
-    pendingBarcodeScan.streak = 0;
+    pendingBarcodeScan = {};
     addBarcodeCode(code, type);
 }
 
