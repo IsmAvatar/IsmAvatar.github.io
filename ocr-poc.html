@@ -298,3 +298,73 @@ function improveTextContrast(ctx, width, height) {
 }
 
 function extractCodes(text) {
+    const found = new Set();
+    const lines = text.toUpperCase().split(/\r?\n/);
+
+    for (const line of lines) {
+        const compactLine = line
+            .replace(/[|I]/g, "1")
+            .replace(/O/g, "0")
+            .replace(/[^A-Z0-9]/g, "");
+
+        for (const code of compactLine.match(codePattern) || []) {
+            found.add(code);
+        }
+    }
+
+    return Array.from(found).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
+    );
+}
+
+function updateCodeList(codes) {
+    extractedCodes = codes;
+    countEl.textContent = "Codes: " + codes.length;
+    copyBtn.disabled = codes.length === 0;
+    listEl.innerHTML = "";
+
+    for (const code of codes) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.textContent = code;
+        listEl.appendChild(row);
+    }
+}
+
+async function captureAndRead() {
+    captureBtn.disabled = true;
+    copyBtn.disabled = true;
+    statusEl.textContent = "Capturing...";
+
+    try {
+        drawVideoFrameToCanvas();
+        const worker = await getOcrWorker();
+        const result = await worker.recognize(canvas);
+        const rawText = result.data.text || "";
+        const codes = extractCodes(rawText);
+
+        rawTextEl.value = rawText;
+        updateCodeList(codes);
+        statusEl.textContent = codes.length ? "Done" : "No H1 codes found";
+    } catch (err) {
+        statusEl.textContent = "OCR error: " + err.message;
+    } finally {
+        captureBtn.disabled = false;
+    }
+}
+
+captureBtn.disabled = true;
+refocusBtn.disabled = true;
+startBtn.addEventListener("click", startCamera);
+captureBtn.addEventListener("click", captureAndRead);
+refocusBtn.addEventListener("click", refocusCamera);
+video.addEventListener("click", refocusCamera);
+copyBtn.addEventListener("click", () => {
+    navigator.clipboard.writeText(extractedCodes.join("\n"));
+});
+
+startCamera();
+</script>
+
+</body>
+</html>
